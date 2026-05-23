@@ -396,19 +396,19 @@ sequenceDiagram
     participant Wallet
     participant DB
 
-    Cliente->>Wallet: POST /deposits + key=K, amount=100
-    Wallet->>DB: BEGIN; INSERT tx(key=K, +100); COMMIT
+    Cliente->>Wallet: POST /deposits key=K amount=100
+    Wallet->>DB: BEGIN, INSERT tx con key=K, COMMIT
     DB-->>Wallet: OK
-    Wallet--xCliente: response (perdido en la red)
+    Wallet--xCliente: response perdido en la red
 
     Note over Cliente,Wallet: Cliente reintenta con el mismo K
 
-    Cliente->>Wallet: POST /deposits + key=K, amount=100
-    Wallet->>DB: BEGIN; INSERT tx(key=K, +100)
-    DB-->>Wallet: ERROR 23505 (UNIQUE violation)
-    Wallet->>DB: ROLLBACK; SELECT * WHERE key=K
+    Cliente->>Wallet: POST /deposits key=K amount=100
+    Wallet->>DB: BEGIN, INSERT tx con key=K
+    DB-->>Wallet: ERROR 23505 UNIQUE violation
+    Wallet->>DB: ROLLBACK, SELECT WHERE key=K
     DB-->>Wallet: tx existente
-    Wallet->>Wallet: compare payload vs tx
+    Wallet->>Wallet: compara payload vs tx
     Wallet-->>Cliente: 200 OK con tx existente
 ```
 
