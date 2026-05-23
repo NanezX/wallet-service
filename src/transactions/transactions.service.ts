@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 
 import { formatMoney } from '../common/money/format-money';
@@ -7,20 +7,27 @@ import { TransactionType } from '../common/transactions/transaction-type';
 import { DatabaseService } from '../db/database.service';
 import { accounts, transactions } from '../db/schema';
 import { decodeCursor, encodeCursor } from './cursor';
-import { DepositResponse, TransactionHistoryItem, TransactionHistoryResponse, WithdrawalResponse } from './transactions.types';
+import {
+  DepositResponse,
+  TransactionHistoryItem,
+  TransactionHistoryResponse,
+  TransferResponse,
+  WithdrawalResponse,
+} from './transactions.types';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
-type DepositResult = {
-  response: DepositResponse;
+type OperationResult<T> = {
+  response: T;
   replayed: boolean;
 };
 
-type WithdrawalResult = {
-  response: WithdrawalResponse;
-  replayed: boolean;
-};
+type DepositResult = OperationResult<DepositResponse>;
+type WithdrawalResult = OperationResult<WithdrawalResponse>;
+type TransferResult = OperationResult<TransferResponse>;
+
+type DatabaseTransaction = Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0];
 
 type StoredTransaction = {
   id: string;
@@ -28,6 +35,12 @@ type StoredTransaction = {
   type: string;
   createdAt: Date;
   accountId: string;
+  transferId?: string | null;
+};
+
+type LockedAccount = {
+  id: string;
+  balance: string;
 };
 
 @Injectable()
@@ -190,6 +203,108 @@ export class TransactionsService {
     }
   }
 
+  async createTransfer(
+    userId: string,
+    idempotencyKey: string,
+    destinationAccountId: string,
+    rawAmount: string,
+  ): Promise<TransferResult> {
+    const requestedAmount = this.normalizePositiveAmount(rawAmount);
+    const storedAmount = this.negateAmount(requestedAmount);
+    const sourceAccount = await this.findAccountByUserId(userId);
+
+    if (sourceAccount.id === destinationAccountId) {
+      throw new UnprocessableEntityException({
+        error: {
+          code: 'SELF_TRANSFER',
+          message: 'Source and destination accounts must be different',
+        },
+      });
+    }
+
+    try {
+      const response = await this.databaseService.db.transaction(async (tx) => {
+        const { source, destination } = await this.lockTransferAccounts(tx, sourceAccount.id, destinationAccountId);
+
+        if (!this.hasSufficientFunds(source.balance, requestedAmount)) {
+          throw new UnprocessableEntityException({
+            error: {
+              code: 'INSUFFICIENT_FUNDS',
+              message: 'Account balance is lower than requested transfer amount',
+            },
+          });
+        }
+
+        const transferId = uuidv7();
+        const [transferOut] = await tx
+          .insert(transactions)
+          .values({
+            id: uuidv7(),
+            accountId: source.id,
+            amount: storedAmount,
+            type: TransactionType.TRANSFER_OUT,
+            idempotencyKey,
+            transferId,
+          })
+          .returning({
+            id: transactions.id,
+            amount: transactions.amount,
+            type: transactions.type,
+            createdAt: transactions.createdAt,
+            accountId: transactions.accountId,
+            transferId: transactions.transferId,
+          });
+
+        await this.insertTransferIn(tx, destination.id, requestedAmount, transferId);
+        await this.updateAccountBalance(tx, source.id, storedAmount);
+        await this.updateAccountBalance(tx, destination.id, requestedAmount);
+
+        return this.toTransferResponse({
+          transferId,
+          amount: requestedAmount,
+          destinationAccountId: destination.id,
+          createdAt: transferOut.createdAt,
+        });
+      });
+
+      return { response, replayed: false };
+    } catch (error: unknown) {
+      if (!this.isUniqueViolation(error)) {
+        throw error;
+      }
+
+      const existingTransferOut = await this.findTransactionByIdempotencyKey(idempotencyKey);
+
+      if (!existingTransferOut?.transferId) {
+        throw error;
+      }
+
+      const existingTransferIn = await this.findTransferInByTransferId(existingTransferOut.transferId);
+
+      if (
+        !existingTransferIn ||
+        existingTransferOut.accountId !== sourceAccount.id ||
+        existingTransferOut.type !== TransactionType.TRANSFER_OUT ||
+        formatMoney(existingTransferOut.amount) !== storedAmount ||
+        existingTransferIn.accountId !== destinationAccountId ||
+        existingTransferIn.type !== TransactionType.TRANSFER_IN ||
+        formatMoney(existingTransferIn.amount) !== requestedAmount
+      ) {
+        throw this.idempotencyKeyReusedException();
+      }
+
+      return {
+        response: this.toTransferResponse({
+          transferId: existingTransferOut.transferId,
+          amount: requestedAmount,
+          destinationAccountId: existingTransferIn.accountId,
+          createdAt: existingTransferOut.createdAt,
+        }),
+        replayed: true,
+      };
+    }
+  }
+
   async listByUserId(userId: string, cursor?: string, limit = DEFAULT_LIMIT): Promise<TransactionHistoryResponse> {
     const sanitizedLimit = this.sanitizeLimit(limit);
     const account = await this.findAccountByUserId(userId);
@@ -277,12 +392,88 @@ export class TransactionsService {
         type: transactions.type,
         createdAt: transactions.createdAt,
         accountId: transactions.accountId,
+        transferId: transactions.transferId,
       })
       .from(transactions)
       .where(eq(transactions.idempotencyKey, idempotencyKey))
       .limit(1);
 
     return transaction;
+  }
+
+  private async findTransferInByTransferId(transferId: string): Promise<StoredTransaction | undefined> {
+    const [transaction] = await this.databaseService.db
+      .select({
+        id: transactions.id,
+        amount: transactions.amount,
+        type: transactions.type,
+        createdAt: transactions.createdAt,
+        accountId: transactions.accountId,
+        transferId: transactions.transferId,
+      })
+      .from(transactions)
+      .where(and(eq(transactions.transferId, transferId), eq(transactions.type, TransactionType.TRANSFER_IN)))
+      .limit(1);
+
+    return transaction;
+  }
+
+  private async lockTransferAccounts(
+    tx: DatabaseTransaction,
+    sourceAccountId: string,
+    destinationAccountId: string,
+  ): Promise<{ source: LockedAccount; destination: LockedAccount }> {
+    const lockedAccounts = await tx
+      .select({ id: accounts.id, balance: accounts.balance })
+      .from(accounts)
+      .where(inArray(accounts.id, [sourceAccountId, destinationAccountId]))
+      .orderBy(asc(accounts.id))
+      .for('update');
+
+    const source = lockedAccounts.find((account) => account.id === sourceAccountId);
+    const destination = lockedAccounts.find((account) => account.id === destinationAccountId);
+
+    if (!source || !destination) {
+      throw this.accountNotFoundException();
+    }
+
+    return { source, destination };
+  }
+
+  private async insertTransferIn(
+    tx: DatabaseTransaction,
+    destinationAccountId: string,
+    amount: string,
+    transferId: string,
+  ): Promise<StoredTransaction> {
+    const [transferIn] = await tx
+      .insert(transactions)
+      .values({
+        id: uuidv7(),
+        accountId: destinationAccountId,
+        amount,
+        type: TransactionType.TRANSFER_IN,
+        transferId,
+      })
+      .returning({
+        id: transactions.id,
+        amount: transactions.amount,
+        type: transactions.type,
+        createdAt: transactions.createdAt,
+        accountId: transactions.accountId,
+        transferId: transactions.transferId,
+      });
+
+    return transferIn;
+  }
+
+  private async updateAccountBalance(tx: DatabaseTransaction, accountId: string, amountDelta: string): Promise<void> {
+    await tx
+      .update(accounts)
+      .set({
+        balance: sql`${accounts.balance} + ${amountDelta}`,
+      })
+      .where(eq(accounts.id, accountId));
   }
 
   private normalizePositiveAmount(value: string): string {
@@ -373,6 +564,20 @@ export class TransactionsService {
       amount: amount.startsWith('-') ? amount.slice(1) : amount,
       type: TransactionType.WITHDRAWAL,
       createdAt: transaction.createdAt.toISOString(),
+    };
+  }
+
+  private toTransferResponse(transfer: {
+    transferId: string;
+    amount: string;
+    destinationAccountId: string;
+    createdAt: Date;
+  }): TransferResponse {
+    return {
+      transferId: transfer.transferId,
+      amount: formatMoney(transfer.amount),
+      destinationAccountId: transfer.destinationAccountId,
+      createdAt: transfer.createdAt.toISOString(),
     };
   }
 }
