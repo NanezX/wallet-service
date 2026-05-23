@@ -1,11 +1,15 @@
 import { TransactionType } from '../common/transactions/transaction-type';
 
-export type DepositResponse = {
+type WriteTransactionResponse<TType extends TransactionType.DEPOSIT | TransactionType.WITHDRAWAL> = {
   transactionId: string;
   amount: string;
-  type: TransactionType.DEPOSIT;
+  type: TType;
   createdAt: string;
 };
+
+export type DepositResponse = WriteTransactionResponse<TransactionType.DEPOSIT>;
+
+export type WithdrawalResponse = WriteTransactionResponse<TransactionType.WITHDRAWAL>;
 
 export type TransactionHistoryItem = {
   id: string;
