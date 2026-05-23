@@ -227,7 +227,21 @@ Es lo que mejor encaja con el consumidor probable (otros servicios internos + ev
 - **Versioning en URL (`/v1/`).** Visible, cacheable, no obliga al cliente a manejar header de negociación. Convención común para APIs internas. Alternativa descartada: header `Accept-Version`, más limpio en teoría pero menos manejable en práctica (no se ve en logs/tracing sin extraerlo).
 - **Recursos plurales, verbos como sub-recursos** (`/accounts/me/deposits` en vez de `/accounts/me/deposit`). REST estricto pediría representar "depósitos" como recursos creables, lo cual coincide con la realidad: un depósito es una transacción que persiste y se puede consultar.
 
-### 4.3 Idempotencia
+### 4.3 Autorización: quién puede crear una cuenta
+
+`POST /v1/accounts` está protegido por el mismo `JwtGuard` que el resto de endpoints - **no depende del API Gateway** para autorizar. El gateway es defensa en profundidad (rate limiting, WAF, TLS), no la barrera de identidad: si mañana se cae o lo bypasean, el wallet sigue siendo seguro.
+
+Reglas de autorización para creación de cuenta:
+
+1. **JWT válido obligatorio.** Sin token firmado por el IdP → 401.
+2. **`user_id` se toma del claim `sub` del JWT, nunca del body.** Aunque el cliente mande otro user_id en el payload, se ignora. Esto previene que un usuario A cree una cuenta a nombre de un usuario B.
+3. **`UNIQUE(user_id)` en `accounts`** hace que la operación sea naturalmente idempotente a nivel de recurso: segundo intento devuelve `409 ACCOUNT_ALREADY_EXISTS`. No hace falta `X-Idempotency-Key` aquí - la unicidad la garantiza el dominio, no el protocolo.
+
+**Modelo implícito:** el wallet asume que *si llegó un JWT firmado, ese usuario está aprobado para tener wallet*. La decisión de quién puede tener wallet (KYC, AML, edad, jurisdicción) vive en el **IdP / Onboarding Service upstream**, no acá. El wallet no re-valida políticas de negocio sobre la identidad - eso es responsabilidad de quien emitió el token, igual que con `POST /deposits` confiamos en que el Payment Service ya validó el rail externo.
+
+> **Alternativa descartada para el MVP: gating por scope M2M.** En fintech regulada se ve el patrón donde `POST /v1/accounts` solo lo puede llamar un service account (p.ej. el Onboarding Service con un JWT que tenga `scope: "wallet:provision"`), nunca el usuario final directamente. Es más estricto y deja una traza clara de "qué servicio aprobó esta cuenta". Lo dejé fuera porque agrega scope-checking sin un caller M2M real en este alcance, y la separación de responsabilidad (IdP decide identidad, wallet decide unicidad) ya queda limpia con la postura actual. Migrar a esa variante es agregar un check de claim en el guard, sin cambios de schema.
+
+### 4.4 Idempotencia
 
 **Convención de protocolo:** todas las operaciones de escritura aceptan el header `X-Idempotency-Key: <UUIDv4>`. El cliente lo genera, es responsable de reutilizarlo en reintentos.
 
@@ -245,7 +259,7 @@ Es lo que mejor encaja con el consumidor probable (otros servicios internos + ev
 
 **Por qué el key vive en `transactions` (sección 3) con UNIQUE parcial:** evita una tabla nueva y un round-trip extra. Pago el costo del índice parcial (mínimo en Postgres). Para transferencias, el key vive solo en la fila `TRANSFER_OUT` - la fila `TRANSFER_IN` tiene `NULL` (ver 5.3 para el porqué).
 
-### 4.4 Errores
+### 4.5 Errores
 
 Formato uniforme tipo Problem Details (RFC 7807) simplificado:
 
@@ -278,7 +292,7 @@ Formato uniforme tipo Problem Details (RFC 7807) simplificado:
 
 **Cómo distingo 422 vs 409:** 422 es "el request es válido sintácticamente pero rompe una regla de negocio sobre los datos actuales". 409 es "el request choca con el estado del recurso de forma irreconciliable". Útil para que el cliente decida si reintentar (409: no, ajustar; 422: probablemente no, salvo cambio de contexto).
 
-### 4.5 Paginación del historial
+### 4.6 Paginación del historial
 
 **Cursor-based**, no offset-based. El ledger es append-only y puede crecer indefinidamente; offset sería ineficiente (escanear N filas para descartarlas) e inconsistente bajo inserts concurrentes.
 
@@ -374,7 +388,7 @@ COMMIT;
 
 **El problema:** el cliente envía un depósito, no recibe respuesta (timeout de red), reintenta. No debe duplicar el cargo.
 
-**Mecanismo:** ya descrito en 4.3. Resumen del flujo en condiciones de carrera:
+**Mecanismo:** ya descrito en 4.4. Resumen del flujo en condiciones de carrera:
 
 ```mermaid
 sequenceDiagram
