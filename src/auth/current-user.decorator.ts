@@ -1,10 +1,6 @@
 import { UnauthorizedException, createParamDecorator, ExecutionContext } from '@nestjs/common';
 
-type RequestWithUser = {
-  user?: {
-    userId?: string;
-  };
-};
+import { RequestWithUser } from './auth.types';
 
 export const CurrentUser = createParamDecorator((_data: unknown, context: ExecutionContext): string => {
   const request = context.switchToHttp().getRequest<RequestWithUser>();

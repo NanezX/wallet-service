@@ -2,18 +2,7 @@ import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from
 import { ConfigService } from '@nestjs/config';
 import jwt from 'jsonwebtoken';
 
-type JwtPayload = {
-  sub?: string;
-};
-
-type RequestWithAuth = {
-  headers: {
-    authorization?: string;
-  };
-  user?: {
-    userId: string;
-  };
-};
+import { AccessTokenPayload, RequestWithAuth } from './auth.types';
 
 function unauthorized(): UnauthorizedException {
   return new UnauthorizedException({
@@ -39,7 +28,7 @@ export class JwtGuard implements CanActivate {
     const token = authorization.slice('Bearer '.length);
 
     try {
-      const payload = jwt.verify(token, this.configService.getOrThrow<string>('JWT_SECRET')) as JwtPayload | string;
+      const payload = jwt.verify(token, this.configService.getOrThrow<string>('JWT_SECRET')) as AccessTokenPayload | string;
 
       if (typeof payload === 'string' || typeof payload.sub !== 'string' || payload.sub.length === 0) {
         throw unauthorized();
