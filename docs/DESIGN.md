@@ -180,6 +180,8 @@ CREATE INDEX idx_transactions_transfer_id
 
 **`amount` puede ser positivo o negativo, nunca cero.** Convención: `DEPOSIT` y `TRANSFER_IN` son positivos; `WITHDRAWAL` y `TRANSFER_OUT` son negativos. Esto hace que la invariante sea simplemente `SUM(amount)` sin tener que interpretar el `type`. El `CHECK (amount <> 0)` previene tx vacías que ensuciarían el historial.
 
+**Los reversos no son un tipo nuevo.** Cuando exista el Payment Service y necesite revertir un retiro fallido (ver §1.1), el asiento compensatorio se modela como un `DEPOSIT` con metadata de referencia al asiento original (idealmente una columna `reference_transaction_id` agregada en esa iteración), **no como un `WITHDRAWAL_REVERSAL`**. El ledger no necesita conocer la causa del asiento, solo el signo: para la invariante `SUM(amount)`, un reverso de retiro y un depósito común son indistinguibles, y eso es deseable. Agregar tipos por cada causa de negocio acopla el schema del ledger a la lógica del caller, que es justo lo que la separación con Payment Service busca evitar.
+
 **`transfer_id` agrupa las dos puntas** - una transferencia genera dos filas en el ledger (débito en origen, crédito en destino, ver sección 5.3). `transfer_id` es el mismo en ambas y permite reconstruir la operación con un único `WHERE transfer_id = $X`. Es `NULL` para depósitos y retiros, donde no aplica.
 
 ### 3.3 La invariante
