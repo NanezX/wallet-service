@@ -1,9 +1,3 @@
-import { IsString, Matches } from 'class-validator';
+import { TransactionAmountDto } from './transaction-amount.dto';
 
-export class CreateDepositDto {
-  @IsString()
-  @Matches(/^\d+(\.\d{1,4})?$/, {
-    message: 'amount must be a positive decimal string with up to 4 decimal places',
-  })
-  amount!: string;
-}
+export class CreateDepositDto extends TransactionAmountDto {}
