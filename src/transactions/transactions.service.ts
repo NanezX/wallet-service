@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 
@@ -7,7 +7,7 @@ import { TransactionType } from '../common/transactions/transaction-type';
 import { DatabaseService } from '../db/database.service';
 import { accounts, transactions } from '../db/schema';
 import { decodeCursor, encodeCursor } from './cursor';
-import { DepositResponse, TransactionHistoryItem, TransactionHistoryResponse } from './transactions.types';
+import { DepositResponse, TransactionHistoryItem, TransactionHistoryResponse, WithdrawalResponse } from './transactions.types';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
@@ -17,7 +17,12 @@ type DepositResult = {
   replayed: boolean;
 };
 
-type StoredDeposit = {
+type WithdrawalResult = {
+  response: WithdrawalResponse;
+  replayed: boolean;
+};
+
+type StoredTransaction = {
   id: string;
   amount: string;
   type: string;
@@ -43,12 +48,7 @@ export class TransactionsService {
           .limit(1);
 
         if (!lockedAccount) {
-          throw new NotFoundException({
-            error: {
-              code: 'ACCOUNT_NOT_FOUND',
-              message: 'Account not found',
-            },
-          });
+          throw this.accountNotFoundException();
         }
 
         const [createdTransaction] = await tx
@@ -86,17 +86,7 @@ export class TransactionsService {
         throw error;
       }
 
-      const [existingTransaction] = await this.databaseService.db
-        .select({
-          id: transactions.id,
-          amount: transactions.amount,
-          type: transactions.type,
-          createdAt: transactions.createdAt,
-          accountId: transactions.accountId,
-        })
-        .from(transactions)
-        .where(eq(transactions.idempotencyKey, idempotencyKey))
-        .limit(1);
+      const existingTransaction = await this.findTransactionByIdempotencyKey(idempotencyKey);
 
       if (!existingTransaction) {
         throw error;
@@ -107,16 +97,94 @@ export class TransactionsService {
         existingTransaction.type !== TransactionType.DEPOSIT ||
         formatMoney(existingTransaction.amount) !== amount
       ) {
-        throw new ConflictException({
-          error: {
-            code: 'IDEMPOTENCY_KEY_REUSED',
-            message: 'Idempotency key was already used with a different payload',
-          },
-        });
+        throw this.idempotencyKeyReusedException();
       }
 
       return {
         response: this.toDepositResponse(existingTransaction),
+        replayed: true,
+      };
+    }
+  }
+
+  async createWithdrawal(userId: string, idempotencyKey: string, rawAmount: string): Promise<WithdrawalResult> {
+    const requestedAmount = this.normalizePositiveAmount(rawAmount);
+    const storedAmount = this.negateAmount(requestedAmount);
+    const account = await this.findAccountByUserId(userId);
+
+    try {
+      const response = await this.databaseService.db.transaction(async (tx) => {
+        const [lockedAccount] = await tx
+          .select({ id: accounts.id, balance: accounts.balance })
+          .from(accounts)
+          .where(eq(accounts.id, account.id))
+          .for('update')
+          .limit(1);
+
+        if (!lockedAccount) {
+          throw this.accountNotFoundException();
+        }
+
+        if (!this.hasSufficientFunds(lockedAccount.balance, requestedAmount)) {
+          throw new UnprocessableEntityException({
+            error: {
+              code: 'INSUFFICIENT_FUNDS',
+              message: 'Account balance is lower than requested withdrawal amount',
+            },
+          });
+        }
+
+        const [createdTransaction] = await tx
+          .insert(transactions)
+          .values({
+            id: uuidv7(),
+            accountId: account.id,
+            amount: storedAmount,
+            type: TransactionType.WITHDRAWAL,
+            idempotencyKey,
+          })
+          .returning({
+            id: transactions.id,
+            amount: transactions.amount,
+            type: transactions.type,
+            createdAt: transactions.createdAt,
+          });
+
+        await tx
+          .update(accounts)
+          .set({
+            balance: sql`${accounts.balance} + ${storedAmount}`,
+          })
+          .where(eq(accounts.id, account.id));
+
+        return this.toWithdrawalResponse({
+          ...createdTransaction,
+          accountId: account.id,
+        });
+      });
+
+      return { response, replayed: false };
+    } catch (error: unknown) {
+      if (!this.isUniqueViolation(error)) {
+        throw error;
+      }
+
+      const existingTransaction = await this.findTransactionByIdempotencyKey(idempotencyKey);
+
+      if (!existingTransaction) {
+        throw error;
+      }
+
+      if (
+        existingTransaction.accountId !== account.id ||
+        existingTransaction.type !== TransactionType.WITHDRAWAL ||
+        formatMoney(existingTransaction.amount) !== storedAmount
+      ) {
+        throw this.idempotencyKeyReusedException();
+      }
+
+      return {
+        response: this.toWithdrawalResponse(existingTransaction),
         replayed: true,
       };
     }
@@ -195,15 +263,26 @@ export class TransactionsService {
       .limit(1);
 
     if (!account) {
-      throw new NotFoundException({
-        error: {
-          code: 'ACCOUNT_NOT_FOUND',
-          message: 'Account not found',
-        },
-      });
+      throw this.accountNotFoundException();
     }
 
     return account;
+  }
+
+  private async findTransactionByIdempotencyKey(idempotencyKey: string): Promise<StoredTransaction | undefined> {
+    const [transaction] = await this.databaseService.db
+      .select({
+        id: transactions.id,
+        amount: transactions.amount,
+        type: transactions.type,
+        createdAt: transactions.createdAt,
+        accountId: transactions.accountId,
+      })
+      .from(transactions)
+      .where(eq(transactions.idempotencyKey, idempotencyKey))
+      .limit(1);
+
+    return transaction;
   }
 
   private normalizePositiveAmount(value: string): string {
@@ -219,6 +298,24 @@ export class TransactionsService {
     }
 
     return amount;
+  }
+
+  private negateAmount(amount: string): string {
+    return amount.startsWith('-') ? amount : `-${amount}`;
+  }
+
+  private hasSufficientFunds(balance: string, requestedAmount: string): boolean {
+    return this.toScaledUnits(balance) >= this.toScaledUnits(requestedAmount);
+  }
+
+  private toScaledUnits(amount: string): bigint {
+    const normalizedAmount = formatMoney(amount);
+    const isNegative = normalizedAmount.startsWith('-');
+    const absoluteAmount = isNegative ? normalizedAmount.slice(1) : normalizedAmount;
+    const [integerPart, fractionalPart] = absoluteAmount.split('.');
+    const scaledUnits = BigInt(`${integerPart}${fractionalPart}`);
+
+    return isNegative ? -scaledUnits : scaledUnits;
   }
 
   private isUniqueViolation(error: unknown): error is { code: string } {
@@ -241,11 +338,40 @@ export class TransactionsService {
     return undefined;
   }
 
-  private toDepositResponse(transaction: StoredDeposit): DepositResponse {
+  private accountNotFoundException(): NotFoundException {
+    return new NotFoundException({
+      error: {
+        code: 'ACCOUNT_NOT_FOUND',
+        message: 'Account not found',
+      },
+    });
+  }
+
+  private idempotencyKeyReusedException(): ConflictException {
+    return new ConflictException({
+      error: {
+        code: 'IDEMPOTENCY_KEY_REUSED',
+        message: 'Idempotency key was already used with a different payload',
+      },
+    });
+  }
+
+  private toDepositResponse(transaction: StoredTransaction): DepositResponse {
     return {
       transactionId: transaction.id,
       amount: formatMoney(transaction.amount),
       type: TransactionType.DEPOSIT,
+      createdAt: transaction.createdAt.toISOString(),
+    };
+  }
+
+  private toWithdrawalResponse(transaction: StoredTransaction): WithdrawalResponse {
+    const amount = formatMoney(transaction.amount);
+
+    return {
+      transactionId: transaction.id,
+      amount: amount.startsWith('-') ? amount.slice(1) : amount,
+      type: TransactionType.WITHDRAWAL,
       createdAt: transaction.createdAt.toISOString(),
     };
   }
