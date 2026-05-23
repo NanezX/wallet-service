@@ -37,6 +37,7 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "drizzle-orm": "^0.45.2",
+    "joi": "^18.2.1",
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.21.0",
     "pino": "^10.3.1",
