@@ -11,6 +11,13 @@ export type DepositResponse = WriteTransactionResponse<TransactionType.DEPOSIT>;
 
 export type WithdrawalResponse = WriteTransactionResponse<TransactionType.WITHDRAWAL>;
 
+export type TransferResponse = {
+  transferId: string;
+  amount: string;
+  destinationAccountId: string;
+  createdAt: string;
+};
+
 export type TransactionHistoryItem = {
   id: string;
   amount: string;
