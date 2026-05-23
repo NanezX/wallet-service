@@ -1,4 +1,4 @@
-# Wallet Service — Documento de Diseño
+# Wallet Service - Documento de Diseño
 
 > Este documento explica **qué construí, por qué, y qué decidí no resolver**.
 
@@ -53,7 +53,7 @@ sequenceDiagram
 **Para retiros la simetría se rompe un poco** y vale documentarla. La forma madura es un patrón en dos fases:
 
 1. El wallet **debita** sincrónicamente (lo que sí implemento). El dinero del usuario "se va" del balance.
-2. El Payment Service **ejecuta el payout** vía el rail. Si falla irrecuperablemente, llama al wallet para **revertir el débito** con una operación compensatoria (un depósito etiquetado como reverso, no un UPDATE — el ledger es append-only).
+2. El Payment Service **ejecuta el payout** vía el rail. Si falla irrecuperablemente, llama al wallet para **revertir el débito** con una operación compensatoria (un depósito etiquetado como reverso, no un UPDATE - el ledger es append-only).
 
 La forma realmente robusta requiere **holds / pending balance** (reservar antes de capturar). No lo implemento en este alcance, lo documento en sección 8. La defensa: el ledger ya soporta reversos por construcción (cualquier asiento se compensa con su inverso), así que la extensión no rompe el modelo.
 
@@ -61,7 +61,7 @@ La forma realmente robusta requiere **holds / pending balance** (reservar antes 
 
 ### Lo que el documento prioriza
 
-Hay tres cosas en los que un servicio que mueve dinero se gana o se pierde: **concurrencia**, **idempotencia** y **atomicidad de operaciones compuestas**. Las secciones 4 y 5 (modelo de datos + garantías) son las largas a propósito — el resto se deriva de ahí.
+Hay tres cosas en los que un servicio que mueve dinero se gana o se pierde: **concurrencia**, **idempotencia** y **atomicidad de operaciones compuestas**. Las secciones 4 y 5 (modelo de datos + garantías) son las largas a propósito - el resto se deriva de ahí.
 
 ---
 
@@ -116,7 +116,7 @@ flowchart TB
     Schema -.-> Postgres[(PostgreSQL)]
 ```
 
-Tres capas, sin abstracciones de más. No hay repositorios genéricos ni Use Cases por separado — para 5 capacidades, sumaría boilerplate sin valor. Si el dominio crece, se introducen.
+Tres capas, sin abstracciones de más. No hay repositorios genéricos ni Use Cases por separado - para 5 capacidades, sumaría codigo boilerplate sin valor. Si el dominio crece, se introducen.
 
 ---
 
@@ -164,23 +164,23 @@ CREATE INDEX idx_transactions_transfer_id
 
 ### 3.2 Decisiones por campo
 
-**`amount` como `NUMERIC(20,4)`** — los floats binarios (IEEE 754) acumulan error en operaciones decimales (`0.1 + 0.2 ≠ 0.3`). En un ledger eso rompe la invariante después de N operaciones sin que nadie haga nada mal. `NUMERIC` en Postgres es decimal exacto, precisión arbitraria. `(20,4)` me da hasta ~10 billones con 4 decimales — sobra para wallets fiat y deja margen para comisiones fraccionarias.
+**`amount` como `NUMERIC(20,4)`**: los floats binarios (IEEE 754) acumulan error en operaciones decimales (`0.1 + 0.2 ≠ 0.3`). En un ledger eso rompe la invariante después de N operaciones sin que nadie haga nada mal. `NUMERIC` en Postgres es decimal exacto, precisión arbitraria. `(20,4)` me da hasta ~10 billones con 4 decimales - sobra para wallets fiat y deja margen para comisiones fraccionarias.
 
-> **Alternativa descartada: `BIGINT` con la unidad mínima (centavos).** Es lo que hace Stripe internamente: más rápido, sin tema decimal. Lo descarté porque en este volumen no se nota la diferencia, y `NUMERIC` es más legible al hacer un `SELECT` durante un incidente a las 3 a.m. La extensión a entero es viable como migración futura si el throughput lo justifica.
+> **Alternativa descartada: `BIGINT` con la unidad mínima (centavos).** Es lo que hace Stripe internamente: más rápido, sin tema decimal. Lo descarté porque en este volumen no se nota la diferencia, y `NUMERIC` es más legible al hacer un `SELECT`. La extensión a entero es viable como migración futura si se justifica.
 
-**`id` de `transactions` como UUIDv7** — necesito ordenamiento temporal estable para paginación cursor (sección 6.3), y UUIDv7 codifica el timestamp en los primeros bits. Esto da tres cosas en uno: unicidad global, ordenable, opaco al cliente.
+**`id` de `transactions` como UUIDv7**: se necesita ordenamiento temporal estable para paginación cursor (sección 6.3), y UUIDv7 codifica el timestamp en los primeros bits. Esto da tres cosas en uno: unicidad global, ordenable, opaco al cliente.
 
 > **Alternativas descartadas:**
-> - **`BIGSERIAL`:** ordenable y eficiente, pero filtra volumen al exterior (un `id=1234` revela que existen 1234 tx) y crea contención en una sequence bajo carga alta.
-> - **`UUIDv4`:** universalmente único pero no ordenable; en índices B-tree genera inserts en posiciones aleatorias, peor cache locality y más fragmentación.
+> - **`BIGSERIAL`:** ordenable y eficiente, pero filtra volumen al exterior (un `id=1234` puede revelar que existen 1234 transacciones) y crea contención en una sequence bajo carga alta.
+> - **`UUIDv4`:** universalmente único pero no ordenable; en índices con binary tree genera inserts en posiciones aleatorias, peor cache locality y más fragmentación.
 
-**`id` de `accounts` como UUIDv4** — no necesito ordenamiento sobre cuentas (no las pagino), prefiero el estándar más adoptado. `gen_random_uuid()` nativo de Postgres.
+**`id` de `accounts` como UUIDv4** - no necesito ordenamiento sobre cuentas (no las pagino), prefiero el estándar más adoptado. `gen_random_uuid()` nativo de Postgres.
 
-**`type` como `TEXT` con `CHECK`** en lugar de `ENUM` de Postgres — los enums de PG son rígidos para evolución (agregar valores requiere `ALTER TYPE`, no se pueden quitar). `TEXT + CHECK` da la misma garantía y se modifica con `DROP CONSTRAINT` + `ADD CONSTRAINT`. Trade-off mínimo en performance, ganancia grande en flexibilidad.
+**`type` como `TEXT` con `CHECK`** en lugar de `ENUM` de Postgres - los enums de PG son rígidos para evolución (agregar valores requiere `ALTER TYPE`, no se pueden quitar). `TEXT + CHECK` da la misma garantía y se modifica con `DROP CONSTRAINT` + `ADD CONSTRAINT`. Trade-off mínimo en performance, ganancia grande en flexibilidad.
 
 **`amount` puede ser positivo o negativo, nunca cero.** Convención: `DEPOSIT` y `TRANSFER_IN` son positivos; `WITHDRAWAL` y `TRANSFER_OUT` son negativos. Esto hace que la invariante sea simplemente `SUM(amount)` sin tener que interpretar el `type`. El `CHECK (amount <> 0)` previene tx vacías que ensuciarían el historial.
 
-**`transfer_id` agrupa las dos puntas** — una transferencia genera dos filas en el ledger (débito en origen, crédito en destino, ver sección 5.3). `transfer_id` es el mismo en ambas y permite reconstruir la operación con un único `WHERE transfer_id = $X`. Es `NULL` para depósitos y retiros, donde no aplica.
+**`transfer_id` agrupa las dos puntas** - una transferencia genera dos filas en el ledger (débito en origen, crédito en destino, ver sección 5.3). `transfer_id` es el mismo en ambas y permite reconstruir la operación con un único `WHERE transfer_id = $X`. Es `NULL` para depósitos y retiros, donde no aplica.
 
 ### 3.3 La invariante
 
@@ -190,7 +190,7 @@ El balance en `accounts` es **cache** del agregado del ledger. La fuente de verd
 1. **Lectura O(1)** del saldo sin escanear N filas.
 2. **Punto de serialización por cuenta** (la fila sobre la que aplica el lock pesimista).
 
-La invariante no es un `CONSTRAINT` de Postgres — los `CHECK` no pueden cubrir agregaciones cross-tabla sin triggers caros. Se mantiene de dos formas complementarias:
+La invariante no es un `CONSTRAINT` de Postgres - los `CHECK` no pueden cubrir agregaciones cross-tabla sin triggers caros. Se mantiene de dos formas complementarias:
 
 - **Preservada transaccionalmente**: el `INSERT` en `transactions` y el `UPDATE` de `accounts.balance` ocurren dentro de la **misma transacción DB** con lock pesimista sobre la cuenta (sección 5). Atómico, no hay forma de que una se aplique sin la otra.
 - **Verificable con reconciliación periódica**: un job (no implementado, ver sección 8) corre `SELECT account_id, SUM(amount) FROM transactions GROUP BY account_id` y compara contra `accounts.balance`. Si hay drift, alerta. Es el seguro de vida ante un bug que se nos pase a producción.
@@ -241,7 +241,7 @@ Es lo que mejor encaja con el consumidor probable (otros servicios internos + ev
 
 **Por qué no una tabla `idempotency_records` separada (estilo Stripe):** evita tabla extra y replicación del response body. El response es determinístico a partir de la tx (id, amount, balance resultante, timestamps) y se reconstruye leyendo por `idempotency_key`. Acepta el trade-off de no guardar el response byte-exacto: si en el futuro las representaciones evolucionan, un replay viejo podría recibir un body ligeramente distinto al original. Lo considero aceptable.
 
-**Por qué el key vive en `transactions` (sección 3) con UNIQUE parcial:** evita una tabla nueva y un round-trip extra. Pago el costo del índice parcial (mínimo en Postgres). Para transferencias, el key vive solo en la fila `TRANSFER_OUT` — la fila `TRANSFER_IN` tiene `NULL` (ver 5.3 para el porqué).
+**Por qué el key vive en `transactions` (sección 3) con UNIQUE parcial:** evita una tabla nueva y un round-trip extra. Pago el costo del índice parcial (mínimo en Postgres). Para transferencias, el key vive solo en la fila `TRANSFER_OUT` - la fila `TRANSFER_IN` tiene `NULL` (ver 5.3 para el porqué).
 
 ### 4.4 Errores
 
@@ -315,7 +315,7 @@ WHERE id = $account_id
 FOR UPDATE;
 ```
 
-`FOR UPDATE` adquiere un lock exclusivo sobre la fila. Cualquier otra transacción que intente `FOR UPDATE` la misma fila **espera en cola** hasta que la primera commitee o haga rollback. Lecturas sin lock (`SELECT` simple) siguen viendo el valor anterior y no se bloquean — lo cual es correcto: la consulta de saldo no necesita serialización.
+`FOR UPDATE` adquiere un lock exclusivo sobre la fila. Cualquier otra transacción que intente `FOR UPDATE` la misma fila **espera en cola** hasta que la primera commitee o haga rollback. Lecturas sin lock (`SELECT` simple) siguen viendo el valor anterior y no se bloquean - lo cual es correcto: la consulta de saldo no necesita serialización.
 
 **Nivel de aislamiento:** `READ COMMITTED` (default de Postgres). No necesito `SERIALIZABLE` porque el lock pesimista ya me da serialización efectiva por cuenta, sin pagar el costo de retries por `serialization_failure`.
 
@@ -407,7 +407,7 @@ sequenceDiagram
 - Antes del COMMIT → Postgres rollback server-side. El cliente recibe error de conexión (5xx), reintenta con el mismo `idempotency_key`, y como nada se persistió, la operación se ejecuta limpiamente.
 - Después del COMMIT pero antes de devolver respuesta al cliente → la operación quedó aplicada, el cliente reintenta, idempotencia devuelve 200 con la tx existente. Convergente.
 
-Lo único que **no** está cubierto: si el proceso muere después del COMMIT y el cliente **no** reintenta (por ejemplo, porque también murió), el cliente nunca sabrá que su operación fue exitosa. Ese problema no se puede resolver desde el servidor — es el problema de los dos generales. La idempotencia lo mitiga: cualquier consumidor que reintente convergerá al estado correcto.
+Lo único que **no** está cubierto: si el proceso muere después del COMMIT y el cliente **no** reintenta (por ejemplo, porque también murió), el cliente nunca sabrá que su operación fue exitosa. Ese problema no se puede resolver desde el servidor - es el problema de los dos generales. La idempotencia lo mitiga: cualquier consumidor que reintente convergerá al estado correcto.
 
 ### 5.6 Fallo momentáneo de DB
 
@@ -425,42 +425,42 @@ Lo que **no** implemento: pool de fallover, lectura desde réplicas, circuit bre
 
 ### 6.1 Tests críticos de integración (los que cuentan la historia)
 
-**T1 — Race condition en retiros: no se permite saldo negativo.**
+**T1 - Race condition en retiros: no se permite saldo negativo.**
 
 - Setup: cuenta con balance 100.
 - Acción: `Promise.all` con 10 retiros simultáneos de 50 cada uno.
 - Aserción: exactamente 2 retiros tienen éxito (200), 8 fallan con `INSUFFICIENT_FUNDS` (422). Balance final = 0. `SUM(transactions)` = 0.
 - Riesgo cubierto: race condition por lectura concurrente del balance. Si el lock pesimista no funcionara, varios verían 100 y aprobarían.
 
-**T2 — Idempotencia: mismo key, mismo payload → un solo efecto.**
+**T2 - Idempotencia: mismo key, mismo payload → un solo efecto.**
 
 - Setup: cuenta con balance 0.
 - Acción: 5 depósitos en paralelo con el mismo `X-Idempotency-Key` y `amount=100`.
 - Aserción: 5 respuestas 200 OK con la misma `transaction_id`. Balance final = 100, no 500. Una sola fila en `transactions`.
 - Riesgo cubierto: cliente retry agresivo, doble cobro.
 
-**T3 — Idempotencia con payload distinto: 409.**
+**T3 - Idempotencia con payload distinto: 409.**
 
 - Setup: depósito previo con key K y amount 100, exitoso.
 - Acción: segundo request con key K pero amount 200.
 - Aserción: 409 `IDEMPOTENCY_KEY_REUSED`. Balance sigue en 100. Una sola fila.
 - Riesgo cubierto: bug del cliente reusando keys; detecta y notifica en vez de hacer algo silenciosamente raro.
 
-**T4 — Transferencia atómica: rollback completo en fallo.**
+**T4 - Transferencia atómica: rollback completo en fallo.**
 
 - Setup: cuenta A con 100, cuenta B con 0.
 - Acción: transferencia A→B inyectando una excepción después del débito (mock que falla en el insert del `TRANSFER_IN`).
 - Aserción: A queda con 100 (no 0), B con 0. Cero filas nuevas en `transactions`.
 - Riesgo cubierto: atomicidad de operación compuesta. Demuestra que la transacción DB envuelve todo.
 
-**T5 — Deadlocks en transferencias inversas: no se cuelgan ni corrompen.**
+**T5 - Deadlocks en transferencias inversas: no se cuelgan ni corrompen.**
 
 - Setup: A y B con balance suficiente para transferencias cruzadas.
 - Acción: `Promise.all` con N transferencias A→B y N transferencias B→A simultáneas, montos iguales.
 - Aserción: todas terminan (ninguna se cuelga indefinidamente), balance final de A y B = balances iniciales (los movimientos se cancelan), invariante `balance == SUM(tx)` se cumple en ambas cuentas.
 - Riesgo cubierto: el orden determinístico de locks funciona. Si fallara, el deadlock detector marcaría algunos requests con 503; el test verifica throughput limpio.
 
-**T6 — Invariante del ledger: property-based ligero.**
+**T6 - Invariante del ledger: property-based ligero.**
 
 - Setup: 5 cuentas con balances iniciales aleatorios.
 - Acción: 200 operaciones aleatorias (mix de depósitos, retiros, transferencias) en paralelo.
@@ -523,12 +523,12 @@ Structured JSON logs (`pino`), un log por request con: `request_id`, `user_id`, 
 
 No implementado en este alcance, pero documento qué expondría:
 
-- `wallet_requests_total{endpoint, status}` — counter.
-- `wallet_request_duration_seconds{endpoint}` — histogram.
-- `wallet_db_transaction_duration_seconds{operation}` — histogram (deposit, withdrawal, transfer).
-- `wallet_idempotency_replays_total` — counter (cuántos retries idempotentes hubo).
-- `wallet_deadlocks_total` — counter (debería ser ~0).
-- `wallet_balance_invariant_drift_total` — counter (debería ser 0; lo emite el job de reconciliación cuando se implemente).
+- `wallet_requests_total{endpoint, status}` - counter.
+- `wallet_request_duration_seconds{endpoint}` - histogram.
+- `wallet_db_transaction_duration_seconds{operation}` - histogram (deposit, withdrawal, transfer).
+- `wallet_idempotency_replays_total` - counter (cuántos retries idempotentes hubo).
+- `wallet_deadlocks_total` - counter (debería ser ~0).
+- `wallet_balance_invariant_drift_total` - counter (debería ser 0; lo emite el job de reconciliación cuando se implemente).
 
 ### 7.5 Cómo se debuggea un incidente
 
@@ -569,7 +569,7 @@ No implementado en este alcance, pero documento qué expondría:
 
 **Estados de transacción (`PENDING`/`COMPLETED`/`REVERSED`).** Atado al punto anterior. Hoy toda fila en `transactions` se considera `COMPLETED` por construcción (solo se inserta cuando la operación se commitea). Para soportar holds o pagos en vuelo, agregaría columna `status` con default `COMPLETED`. Migración no rompe nada porque las filas existentes ya cumplen el invariante.
 
-**Webhooks / notificaciones a clientes.** El wallet no notifica activamente a nadie hoy. En producción, después del COMMIT de un movimiento se emitiría un evento (vía outbox, ver más arriba) que otros servicios (notificaciones push, email, antifraude) consumirían. El wallet no debe hacer la llamada HTTP saliente él mismo — eso lo mete en problemas de retry y de latencia.
+**Webhooks / notificaciones a clientes.** El wallet no notifica activamente a nadie hoy. En producción, después del COMMIT de un movimiento se emitiría un evento (vía outbox, ver más arriba) que otros servicios (notificaciones push, email, antifraude) consumirían. El wallet no debe hacer la llamada HTTP saliente él mismo - eso lo mete en problemas de retry y de latencia.
 
 ---
 
