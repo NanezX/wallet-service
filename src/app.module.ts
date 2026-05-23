@@ -3,7 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 
 import { AccountsModule } from './accounts/accounts.module';
 import { AuthModule } from './auth/auth.module';
-import { validateEnv } from './config/env';
+import { envValidationSchema } from './config/env';
 import { DatabaseModule } from './db/database.module';
 import { HealthModule } from './health/health.module';
 
@@ -11,7 +11,15 @@ import { HealthModule } from './health/health.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      validate: validateEnv,
+      validationSchema: envValidationSchema,
+      validationOptions: {
+        abortEarly: false,
+        // Si más adelante queremos cerrar el paso a typos de env vars con
+        // allowUnknown: false, primero conviene modelar NODE_ENV en el schema
+        // para endurecer producción sin volver incómodo development/test.
+        allowUnknown: true,
+        convert: true,
+      },
     }),
     AuthModule,
     AccountsModule,
