@@ -1,6 +1,6 @@
 # Wallet Service — Documento de Diseño
 
-> Este documento explica **qué construí, por qué, y qué decidí no resolver**. Está pensado para leerse sin abrir el código. Si una decisión no tiene razón y alternativa descartada, es que faltó pensarla — no que el espacio sea para llenar.
+> Este documento explica **qué construí, por qué, y qué decidí no resolver**.
 
 ---
 
@@ -16,18 +16,18 @@ A partir de eso, el sistema implementa cinco capacidades: crear cuenta, deposita
 
 ### Supuestos del entorno
 
-- **Identidad y emisión de tokens viven fuera del servicio.** Asumo un Identity Service (o IdP corporativo) que autentica al usuario y emite un JWT firmado. El wallet service solo **valida** el token (firma + expiración) y extrae `user_id` del claim `sub`. No hay `/login`, `/signup`, ni manejo de passwords aquí: la identidad no es responsabilidad del wallet.
-- **Probablemente exista un API Gateway** delante en producción (rate limiting, WAF, terminación TLS). El servicio no asume su presencia: valida el JWT por sí mismo. Si el gateway existe, es defensa en profundidad; si no, el servicio sigue siendo seguro.
+- **Identidad y emisión de tokens viven fuera del servicio.** Asumo un Identity Service que autentica al usuario y emite un JWT firmado. El wallet service solo **valida** el token (firma + expiración) y extrae `user_id` del claim `sub`. No hay `/login`, `/signup`, ni manejo de passwords aquí: la identidad no es responsabilidad del wallet.
+- **Existencia de un API Gateway** delante en producción (rate limiting, WAF, terminación TLS). El servicio de wallet no asume su presencia ya validam el JWT por sí mismo. Si el gateway existe, es mas defensa, y si no, el servicio sigue siendo seguro.
 - **El `user_id` ya existe** cuando llega el `POST /accounts`. El wallet no crea usuarios, crea wallets asociados a un usuario que el IdP ya conoce.
-- **Single-tenant, single-currency**, en este alcance. Documento al final cómo se extendería sin tirar el modelo.
-- **El wallet no habla con rails externos** (Stripe, ACH, SPEI, tarjetas, bancos). Es el ledger interno del dinero del producto, no el orquestador de cobros. Los `POST /deposits` y `POST /withdrawals` se invocan desde un Payment Service upstream que ya validó el movimiento externo. Más detalle en 1.1.
+- **Single-currency**, en este alcance. Documento al final cómo se extendería sin tirar el modelo.
+- **El wallet no habla con rails externos** (Stripe, tarjetas, bancos). Es el ledger interno del dinero del producto, no el que realiza los cobros. Los `POST /deposits` y `POST /withdrawals` se invocan desde un Payment Service upstream que ya validó el movimiento externo. Más detalle en el documento mas adelante.
 
 ### 1.1 Frontera del servicio: por qué los depósitos se acreditan sincrónicamente
 
 Un depósito "real" tiene dos partes: (a) cobrarle a la tarjeta o cuenta bancaria del usuario en un rail externo, que es asíncrono, puede fallar, puede tardar; (b) acreditar el saldo en el wallet. Estoy separando esas dos responsabilidades:
 
 - **Payment Service (no lo construyo aquí):** se integra con rails externos. Maneja webhooks, retries, dead-letter queues, reconciliación contra el banco. Cuando el rail confirma que el dinero entró, llama al wallet sincrónicamente con un `X-Idempotency-Key` derivado del `charge_id` del rail.
-- **Wallet Service (este repo):** asume que el caller ya validó lo externo. Su único trabajo es mantener consistente el ledger interno. Por eso `POST /deposits` puede acreditar sincrónicamente sin queues ni retries — esa complejidad vive donde corresponde.
+- **Wallet Service (este codigo):** asume que el caller ya validó lo externo. Su único trabajo es mantener consistente el ledger interno. Por eso `POST /deposits` puede acreditar sincrónicamente sin queues ni retries, ya que esa complejidad vive donde corresponde.
 
 ```mermaid
 sequenceDiagram
@@ -61,7 +61,7 @@ La forma realmente robusta requiere **holds / pending balance** (reservar antes 
 
 ### Lo que el documento prioriza
 
-Hay tres ejes en los que un servicio que mueve dinero se gana o se pierde: **concurrencia**, **idempotencia** y **atomicidad de operaciones compuestas**. Las secciones 4 y 5 (modelo de datos + garantías) son las largas a propósito — el resto se deriva de ahí.
+Hay tres cosas en los que un servicio que mueve dinero se gana o se pierde: **concurrencia**, **idempotencia** y **atomicidad de operaciones compuestas**. Las secciones 4 y 5 (modelo de datos + garantías) son las largas a propósito — el resto se deriva de ahí.
 
 ---
 
