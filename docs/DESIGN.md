@@ -144,7 +144,11 @@ CREATE TABLE transactions (
   transfer_id     UUID          NULL,               -- agrupa las 2 puntas de una transferencia
   created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
   CHECK (amount <> 0),
-  CHECK (type IN ('DEPOSIT','WITHDRAWAL','TRANSFER_OUT','TRANSFER_IN'))
+  CHECK (type IN ('DEPOSIT','WITHDRAWAL','TRANSFER_OUT','TRANSFER_IN')),
+  CHECK (
+    (type IN ('DEPOSIT','TRANSFER_IN') AND amount > 0) OR
+    (type IN ('WITHDRAWAL','TRANSFER_OUT') AND amount < 0)
+  )
 );
 
 -- Idempotencia: UNIQUE parcial (permite múltiples NULLs)
@@ -179,6 +183,10 @@ CREATE INDEX idx_transactions_transfer_id
 **`type` como `TEXT` con `CHECK`** en lugar de `ENUM` de Postgres - los enums de PG son rígidos para evolución (agregar valores requiere `ALTER TYPE`, no se pueden quitar). `TEXT + CHECK` da la misma garantía y se modifica con `DROP CONSTRAINT` + `ADD CONSTRAINT`. Trade-off mínimo en performance, ganancia grande en flexibilidad.
 
 **`amount` puede ser positivo o negativo, nunca cero.** Convención: `DEPOSIT` y `TRANSFER_IN` son positivos; `WITHDRAWAL` y `TRANSFER_OUT` son negativos. Esto hace que la invariante sea simplemente `SUM(amount)` sin tener que interpretar el `type`. El `CHECK (amount <> 0)` previene tx vacías que ensuciarían el historial.
+
+**`type` y signo del `amount` se validan juntos en DB.** No dejo esa convención solo en la capa de aplicación: la tabla `transactions` agrega un `CHECK` cruzado que obliga `DEPOSIT` y `TRANSFER_IN` a ser positivos, y `WITHDRAWAL` y `TRANSFER_OUT` a ser negativos. La razón es defensiva: si un bug insertara un `DEPOSIT` con signo invertido y además actualizara `accounts.balance` con ese mismo signo errado, la invariante `balance == SUM(amount)` seguiría cumpliéndose. El sistema quedaría matemáticamente consistente, pero semánticamente corrupto. El `CHECK` corta ese problema en la última línea de defensa y también protege contra inserts manuales o scripts ejecutados fuera de la app.
+
+> **Alternativa descartada: confiar solo en la lógica de aplicación y en la reconciliación del ledger.** Es más simple de mantener, pero deja pasar un bug especialmente peligroso: una fila con tipo válido y signo invertido puede no romper ninguna suma ni ninguna conciliación, y aun así representar una operación de negocio equivocada.
 
 **Los reversos no son un tipo nuevo.** Cuando exista el Payment Service y necesite revertir un retiro fallido (ver §1.1), el asiento compensatorio se modela como un `DEPOSIT` con metadata de referencia al asiento original (idealmente una columna `reference_transaction_id` agregada en esa iteración), **no como un `WITHDRAWAL_REVERSAL`**. El ledger no necesita conocer la causa del asiento, solo el signo: para la invariante `SUM(amount)`, un reverso de retiro y un depósito común son indistinguibles, y eso es deseable. Agregar tipos por cada causa de negocio acopla el schema del ledger a la lógica del caller, que es justo lo que la separación con Payment Service busca evitar.
 
