@@ -6,6 +6,7 @@ import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers
 import request from 'supertest';
 
 import { configureApp } from 'src/bootstrap';
+import { TransactionType } from 'src/common/transactions/transaction-type';
 import { DatabaseService } from 'src/db/database.service';
 import { runMigrations } from 'src/db/migrate';
 import { transactions } from 'src/db/schema';
@@ -130,21 +131,21 @@ describe('Accounts endpoints', () => {
         id: oldestId,
         accountId,
         amount: '10.0000',
-        type: 'DEPOSIT',
+        type: TransactionType.DEPOSIT,
         createdAt: new Date('2026-01-01T10:00:00.000Z'),
       },
       {
         id: middleId,
         accountId,
         amount: '20.0000',
-        type: 'DEPOSIT',
+        type: TransactionType.DEPOSIT,
         createdAt: new Date('2026-01-01T11:00:00.000Z'),
       },
       {
         id: newestId,
         accountId,
         amount: '30.0000',
-        type: 'DEPOSIT',
+        type: TransactionType.DEPOSIT,
         createdAt: new Date('2026-01-01T12:00:00.000Z'),
       },
     ]);

@@ -7,6 +7,7 @@ import jwt from 'jsonwebtoken';
 import request from 'supertest';
 
 import { configureApp } from 'src/bootstrap';
+import { TransactionType } from 'src/common/transactions/transaction-type';
 import { DatabaseService } from 'src/db/database.service';
 import { runMigrations } from 'src/db/migrate';
 import { authHeader } from 'test/helpers/jwt';
@@ -75,7 +76,7 @@ describe('Deposits', () => {
     expect(firstResponse.body).toEqual({
       transactionId: expect.any(String),
       amount: '100.0000',
-      type: 'DEPOSIT',
+      type: TransactionType.DEPOSIT,
       createdAt: expect.any(String),
     });
 
