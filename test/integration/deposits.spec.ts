@@ -60,6 +60,44 @@ describe('Deposits', () => {
       .expect(400);
   });
 
+  it('rejects a deposit when the account does not exist', async () => {
+    const userId = randomUUID();
+
+    const response = await request(app.getHttpServer())
+      .post('/v1/accounts/me/deposits')
+      .set(authHeader(userId))
+      .set('X-Idempotency-Key', randomUUID())
+      .send({ amount: '100.0000' })
+      .expect(404);
+
+    expect(response.body).toEqual({
+      error: {
+        code: 'ACCOUNT_NOT_FOUND',
+        message: 'Account not found',
+      },
+    });
+  });
+
+  it('rejects a deposit amount equal to zero', async () => {
+    const userId = randomUUID();
+
+    await request(app.getHttpServer()).post('/v1/accounts').set(authHeader(userId)).expect(201);
+
+    const response = await request(app.getHttpServer())
+      .post('/v1/accounts/me/deposits')
+      .set(authHeader(userId))
+      .set('X-Idempotency-Key', randomUUID())
+      .send({ amount: '0' })
+      .expect(400);
+
+    expect(response.body).toEqual({
+      error: {
+        code: 'INVALID_AMOUNT',
+        message: 'amount must be greater than zero',
+      },
+    });
+  });
+
   it('creates a deposit and replays the same idempotency key without duplicating the effect', async () => {
     const userId = randomUUID();
     const idempotencyKey = randomUUID();
