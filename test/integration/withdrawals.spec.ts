@@ -59,6 +59,44 @@ describe('Withdrawals', () => {
       .expect(400);
   });
 
+  it('rejects a withdrawal when the account does not exist', async () => {
+    const userId = randomUUID();
+
+    const response = await request(app.getHttpServer())
+      .post('/v1/accounts/me/withdrawals')
+      .set(authHeader(userId))
+      .set('X-Idempotency-Key', randomUUID())
+      .send({ amount: '10.0000' })
+      .expect(404);
+
+    expect(response.body).toEqual({
+      error: {
+        code: 'ACCOUNT_NOT_FOUND',
+        message: 'Account not found',
+      },
+    });
+  });
+
+  it('rejects a withdrawal amount equal to zero', async () => {
+    const userId = randomUUID();
+
+    await createFundedAccount(app, userId, '50.0000');
+
+    const response = await request(app.getHttpServer())
+      .post('/v1/accounts/me/withdrawals')
+      .set(authHeader(userId))
+      .set('X-Idempotency-Key', randomUUID())
+      .send({ amount: '0' })
+      .expect(400);
+
+    expect(response.body).toEqual({
+      error: {
+        code: 'INVALID_AMOUNT',
+        message: 'amount must be greater than zero',
+      },
+    });
+  });
+
   it('creates a withdrawal and replays the same idempotency key without duplicating the effect', async () => {
     const userId = randomUUID();
     const idempotencyKey = randomUUID();
