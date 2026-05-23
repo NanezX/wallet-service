@@ -35,6 +35,14 @@ export const transactions = pgTable(
       'transactions_type_valid',
       sql`${table.type} IN ('DEPOSIT', 'WITHDRAWAL', 'TRANSFER_OUT', 'TRANSFER_IN')`,
     ),
+    check(
+      'transactions_amount_sign_matches_type',
+      sql`(
+        (${table.type} IN ('DEPOSIT', 'TRANSFER_IN') AND ${table.amount} > 0)
+        OR
+        (${table.type} IN ('WITHDRAWAL', 'TRANSFER_OUT') AND ${table.amount} < 0)
+      )`,
+    ),
     uniqueIndex('idx_transactions_idempotency_key')
       .on(table.idempotencyKey)
       .where(sql`${table.idempotencyKey} IS NOT NULL`),
