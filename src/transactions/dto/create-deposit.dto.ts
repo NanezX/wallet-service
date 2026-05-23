@@ -1,4 +1,4 @@
-import { IsString, Matches, IsDecimal } from 'class-validator';
+import { IsString, Matches } from 'class-validator';
 
 export class CreateDepositDto {
   @IsString()
