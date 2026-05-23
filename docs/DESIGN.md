@@ -437,9 +437,7 @@ Lo que **no** implemento: pool de fallover, lectura desde réplicas, circuit bre
 
 ## 6. Estrategia de testing
 
-> No persigo cobertura ciega. Cada test que escribo cubre un riesgo concreto que identifiqué en la sección 5. Si un test no se justifica con "esto previene tal escenario malo", no lo escribo.
-
-### 6.1 Tests críticos de integración (los que cuentan la historia)
+### 6.1 Tests críticos de integración
 
 **T1 - Race condition en retiros: no se permite saldo negativo.**
 
