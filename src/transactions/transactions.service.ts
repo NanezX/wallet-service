@@ -3,6 +3,7 @@ import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 
 import { formatMoney } from '../common/money/format-money';
+import { isPostgresUniqueViolation } from '../common/postgres/postgres-error-code';
 import { TransactionType } from '../common/transactions/transaction-type';
 import { DatabaseService } from '../db/database.service';
 import { accounts, transactions } from '../db/schema';
@@ -510,23 +511,7 @@ export class TransactionsService {
   }
 
   private isUniqueViolation(error: unknown): error is { code: string } {
-    return this.extractErrorCode(error) === '23505';
-  }
-
-  private extractErrorCode(error: unknown): string | undefined {
-    if (typeof error !== 'object' || error === null) {
-      return undefined;
-    }
-
-    if ('code' in error && typeof (error as { code?: unknown }).code === 'string') {
-      return (error as { code: string }).code;
-    }
-
-    if ('cause' in error) {
-      return this.extractErrorCode((error as { cause?: unknown }).cause);
-    }
-
-    return undefined;
+    return isPostgresUniqueViolation(error);
   }
 
   private accountNotFoundException(): NotFoundException {
