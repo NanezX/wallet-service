@@ -2,7 +2,30 @@
 
 Este es un servicio de billetera para un negocio donde los usuarios pueden tener saldo mediante depositos y retiros de saldo. Ademas, el servicio permite realizar transferencias entre usuarios. Naturalmente los usuarios pueden observar su saldo y movimientos historicos.
 
-# Stack tenologico
+## Ejecucion local con Docker Compose
+
+1. Copia el archivo de entorno:
+
+```bash
+cp .env.example .env
+```
+
+2. Si ya tienes el puerto `5432` ocupado, cambia el puerto publicado por Docker en `.env`:
+
+```env
+POSTGRES_HOST_PORT=5433
+APP_HOST_PORT=3000
+```
+
+Si también tienes algo usando `3000`, cambia `APP_HOST_PORT` por otro libre, por ejemplo `3001`.
+
+3. Levanta el stack:
+
+```bash
+docker compose up --build
+```
+
+## Stack tenologico
 
 | Decision | Eleccion | Alternativas descartadas | Razon |
 |----------|----------|--------------------------|-------|
