@@ -1,7 +1,8 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 
+import { withIdempotency } from '../common/idempotency/with-idempotency';
 import { formatMoney } from '../common/money/format-money';
 import { TransactionType } from '../common/transactions/transaction-type';
 import { DatabaseService } from '../db/database.service';
@@ -38,73 +39,55 @@ export class TransactionsService {
     const amount = this.normalizePositiveAmount(rawAmount);
     const account = await this.findAccountByUserId(userId);
 
-    try {
-      const response = await this.databaseService.db.transaction(async (tx) => {
-        const [lockedAccount] = await tx
-          .select({ id: accounts.id, balance: accounts.balance })
-          .from(accounts)
-          .where(eq(accounts.id, account.id))
-          .for('update')
-          .limit(1);
+    return withIdempotency({
+      insertFn: () =>
+        this.databaseService.db.transaction(async (tx) => {
+          const [lockedAccount] = await tx
+            .select({ id: accounts.id, balance: accounts.balance })
+            .from(accounts)
+            .where(eq(accounts.id, account.id))
+            .for('update')
+            .limit(1);
 
-        if (!lockedAccount) {
-          throw this.accountNotFoundException();
-        }
+          if (!lockedAccount) {
+            throw this.accountNotFoundException();
+          }
 
-        const [createdTransaction] = await tx
-          .insert(transactions)
-          .values({
-            id: uuidv7(),
+          const [createdTransaction] = await tx
+            .insert(transactions)
+            .values({
+              id: uuidv7(),
+              accountId: account.id,
+              amount,
+              type: TransactionType.DEPOSIT,
+              idempotencyKey,
+            })
+            .returning({
+              id: transactions.id,
+              amount: transactions.amount,
+              type: transactions.type,
+              createdAt: transactions.createdAt,
+            });
+
+          await tx
+            .update(accounts)
+            .set({
+              balance: sql`${accounts.balance} + ${amount}`,
+            })
+            .where(eq(accounts.id, account.id));
+
+          return this.toDepositResponse({
+            ...createdTransaction,
             accountId: account.id,
-            amount,
-            type: TransactionType.DEPOSIT,
-            idempotencyKey,
-          })
-          .returning({
-            id: transactions.id,
-            amount: transactions.amount,
-            type: transactions.type,
-            createdAt: transactions.createdAt,
           });
-
-        await tx
-          .update(accounts)
-          .set({
-            balance: sql`${accounts.balance} + ${amount}`,
-          })
-          .where(eq(accounts.id, account.id));
-
-        return this.toDepositResponse({
-          ...createdTransaction,
-          accountId: account.id,
-        });
-      });
-
-      return { response, replayed: false };
-    } catch (error: unknown) {
-      if (!this.isUniqueViolation(error)) {
-        throw error;
-      }
-
-      const existingTransaction = await this.findTransactionByIdempotencyKey(idempotencyKey);
-
-      if (!existingTransaction) {
-        throw error;
-      }
-
-      if (
-        existingTransaction.accountId !== account.id ||
-        existingTransaction.type !== TransactionType.DEPOSIT ||
-        formatMoney(existingTransaction.amount) !== amount
-      ) {
-        throw this.idempotencyKeyReusedException();
-      }
-
-      return {
-        response: this.toDepositResponse(existingTransaction),
-        replayed: true,
-      };
-    }
+        }),
+      lookupFn: () => this.findTransactionByIdempotencyKey(idempotencyKey),
+      matchFn: (existing) =>
+        existing.accountId === account.id &&
+        existing.type === TransactionType.DEPOSIT &&
+        formatMoney(existing.amount) === amount,
+      replayFn: (existing) => this.toDepositResponse(existing),
+    });
   }
 
   async createWithdrawal(userId: string, idempotencyKey: string, rawAmount: string): Promise<WithdrawalResult> {
@@ -112,82 +95,64 @@ export class TransactionsService {
     const storedAmount = this.negateAmount(requestedAmount);
     const account = await this.findAccountByUserId(userId);
 
-    try {
-      const response = await this.databaseService.db.transaction(async (tx) => {
-        const [lockedAccount] = await tx
-          .select({ id: accounts.id, balance: accounts.balance })
-          .from(accounts)
-          .where(eq(accounts.id, account.id))
-          .for('update')
-          .limit(1);
+    return withIdempotency({
+      insertFn: () =>
+        this.databaseService.db.transaction(async (tx) => {
+          const [lockedAccount] = await tx
+            .select({ id: accounts.id, balance: accounts.balance })
+            .from(accounts)
+            .where(eq(accounts.id, account.id))
+            .for('update')
+            .limit(1);
 
-        if (!lockedAccount) {
-          throw this.accountNotFoundException();
-        }
+          if (!lockedAccount) {
+            throw this.accountNotFoundException();
+          }
 
-        if (!this.hasSufficientFunds(lockedAccount.balance, requestedAmount)) {
-          throw new UnprocessableEntityException({
-            error: {
-              code: 'INSUFFICIENT_FUNDS',
-              message: 'Account balance is lower than requested withdrawal amount',
-            },
-          });
-        }
+          if (!this.hasSufficientFunds(lockedAccount.balance, requestedAmount)) {
+            throw new UnprocessableEntityException({
+              error: {
+                code: 'INSUFFICIENT_FUNDS',
+                message: 'Account balance is lower than requested withdrawal amount',
+              },
+            });
+          }
 
-        const [createdTransaction] = await tx
-          .insert(transactions)
-          .values({
-            id: uuidv7(),
+          const [createdTransaction] = await tx
+            .insert(transactions)
+            .values({
+              id: uuidv7(),
+              accountId: account.id,
+              amount: storedAmount,
+              type: TransactionType.WITHDRAWAL,
+              idempotencyKey,
+            })
+            .returning({
+              id: transactions.id,
+              amount: transactions.amount,
+              type: transactions.type,
+              createdAt: transactions.createdAt,
+            });
+
+          await tx
+            .update(accounts)
+            .set({
+              balance: sql`${accounts.balance} + ${storedAmount}`,
+            })
+            .where(eq(accounts.id, account.id));
+
+          return this.toWithdrawalResponse({
+            ...createdTransaction,
             accountId: account.id,
-            amount: storedAmount,
-            type: TransactionType.WITHDRAWAL,
-            idempotencyKey,
-          })
-          .returning({
-            id: transactions.id,
-            amount: transactions.amount,
-            type: transactions.type,
-            createdAt: transactions.createdAt,
           });
-
-        await tx
-          .update(accounts)
-          .set({
-            balance: sql`${accounts.balance} + ${storedAmount}`,
-          })
-          .where(eq(accounts.id, account.id));
-
-        return this.toWithdrawalResponse({
-          ...createdTransaction,
-          accountId: account.id,
-        });
-      });
-
-      return { response, replayed: false };
-    } catch (error: unknown) {
-      if (!this.isUniqueViolation(error)) {
-        throw error;
-      }
-
-      const existingTransaction = await this.findTransactionByIdempotencyKey(idempotencyKey);
-
-      if (!existingTransaction) {
-        throw error;
-      }
-
-      if (
-        existingTransaction.accountId !== account.id ||
-        existingTransaction.type !== TransactionType.WITHDRAWAL ||
-        formatMoney(existingTransaction.amount) !== storedAmount
-      ) {
-        throw this.idempotencyKeyReusedException();
-      }
-
-      return {
-        response: this.toWithdrawalResponse(existingTransaction),
-        replayed: true,
-      };
-    }
+        }),
+      lookupFn: () => this.findTransactionByIdempotencyKey(idempotencyKey),
+      matchFn: (existing) =>
+        existing.accountId === account.id &&
+        existing.type === TransactionType.WITHDRAWAL &&
+        formatMoney(existing.amount) === storedAmount,
+      replayFn: (existing) => this.toWithdrawalResponse(existing),
+    });
   }
 
   async listByUserId(userId: string, cursor?: string, limit = DEFAULT_LIMIT): Promise<TransactionHistoryResponse> {
@@ -318,40 +283,11 @@ export class TransactionsService {
     return isNegative ? -scaledUnits : scaledUnits;
   }
 
-  private isUniqueViolation(error: unknown): error is { code: string } {
-    return this.extractErrorCode(error) === '23505';
-  }
-
-  private extractErrorCode(error: unknown): string | undefined {
-    if (typeof error !== 'object' || error === null) {
-      return undefined;
-    }
-
-    if ('code' in error && typeof (error as { code?: unknown }).code === 'string') {
-      return (error as { code: string }).code;
-    }
-
-    if ('cause' in error) {
-      return this.extractErrorCode((error as { cause?: unknown }).cause);
-    }
-
-    return undefined;
-  }
-
   private accountNotFoundException(): NotFoundException {
     return new NotFoundException({
       error: {
         code: 'ACCOUNT_NOT_FOUND',
         message: 'Account not found',
-      },
-    });
-  }
-
-  private idempotencyKeyReusedException(): ConflictException {
-    return new ConflictException({
-      error: {
-        code: 'IDEMPOTENCY_KEY_REUSED',
-        message: 'Idempotency key was already used with a different payload',
       },
     });
   }
