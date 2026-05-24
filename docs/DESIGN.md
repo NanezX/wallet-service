@@ -276,8 +276,7 @@ Formato uniforme tipo Problem Details (RFC 7807) simplificado:
   "error": {
     "code": "INSUFFICIENT_FUNDS",
     "message": "Account balance is lower than requested withdrawal amount",
-    "details": { "account_id": "...", "balance": "100.0000", "requested": "150.0000" },
-    "request_id": "01HXY..."
+    "details": { "account_id": "...", "balance": "100.0000", "requested": "150.0000" }
   }
 }
 ```
@@ -532,14 +531,7 @@ Verifica conexión a Postgres con `SELECT 1`. Si la DB no responde, devuelve 503
 
 ### 7.3 Logging
 
-Structured JSON logs (`pino`), un log por request con: `request_id`, `user_id`, `method`, `path`, `status`, `latency_ms`, `error_code` (si aplica). El `request_id` viene del header `X-Request-Id` si está, o se genera (UUIDv7) si no, y se propaga a cualquier log dentro del request.
-
-**Lo que se loguea con nivel `warn` y dispara alerta** (en producción real):
-- Cualquier 5xx.
-- Deadlock detectado (`40P01`).
-- Reuse de `idempotency_key` con payload distinto (señal de bug en cliente).
-
-**Lo que NO se loguea:** payloads que contengan montos arriba de un threshold (PII financiera), JWTs completos, claims sensibles. Solo `user_id`.
+No implementado en este alcance. En producción real: structured JSON logs, un log por request con `user_id`, `method`, `path`, `status`, `latency_ms`, `error_code`. No loguear montos sobre cierto threshold ni JWTs completos (PII financiera).
 
 ### 7.4 Métricas (mínimo viable)
 
@@ -558,7 +550,7 @@ No implementado en este alcance, pero documento qué expondría:
 
 1. Buscar al usuario por `user_id` en `accounts`. Obtener `balance` cacheado.
 2. `SELECT SUM(amount) FROM transactions WHERE account_id = $X`.
-3. Si difieren → invariante rota, incidente grave. Ir al ledger, leer cronológicamente, encontrar la operación que dejó drift. Usar `request_id` de la fila de la tx (sería bueno agregarlo al schema en una iteración) para encontrar el log.
+3. Si difieren → invariante rota, incidente grave. Ir al ledger, leer cronológicamente, encontrar la operación que dejó drift.
 4. Si coinciden → el saldo es matemáticamente correcto. Revisar historial con el cliente, probablemente el problema es de percepción/UX.
 
 ---
@@ -577,7 +569,7 @@ No implementado en este alcance, pero documento qué expondría:
 
 **Rate limiting.** Asumo que el API Gateway lo hace. Si no hay gateway, agregar a nivel servicio con `@nestjs/throttler` o similar. No es prioridad mientras el contrato sea servicio-a-servicio.
 
-**Tracing distribuido.** OpenTelemetry SDK + exportador OTLP, propagación de `traceparent`. Útil cuando el wallet sea parte de un flujo más grande (pagos, checkout). Hoy con `request_id` correlacionable en logs alcanza.
+**Tracing distribuido.** OpenTelemetry SDK + exportador OTLP, propagación de `traceparent`. Útil cuando el wallet sea parte de un flujo más grande (pagos, checkout).
 
 **Métricas avanzadas + dashboards.** Prometheus + Grafana en producción. El esqueleto de qué exponer ya está en 7.4.
 
